@@ -113,12 +113,19 @@ func getRandomUrl(url string, wg *sync.WaitGroup, responseCh chan<- ResponseData
 	if val, _ := redisGet(checkedUrl); val!="" {
 		responseCh <- ResponseData{Data:val, Source:"from cache "+url}
 	} else {
-
-		data, err := getDataByUrl(url)
+		//если данных в кэше нет, проверяем есть ли лок
+		if !existLock(checkedUrl) {
+			//если лока нет, ставим его и загружаем данные
+			redisSetLock(checkedUrl)
+			data, err := getDataByUrl(url)
 			if err == nil {
 				redisSet(checkedUrl, string(data))
 				responseCh <- ResponseData{Data: string(data), Source: "from url "+ url}
 			}
+			// снимаем лок даже если ответа нет
+			redisSetUnlock(checkedUrl)
+		}
+
 	}
 	mutex.Unlock()
 }

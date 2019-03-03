@@ -7,10 +7,9 @@ urls:
 - https://www.github.com
 - https://www.gitlab.com
 - https://www.duckduckgo.com
-- https://www.atlasian.com
 - https://www.twitter.com
 - https://www.facebook.com
 
-mintimeout: 10
-maxtimeout: 100
+mintimeout: 100
+maxtimeout: 1000
 numberofrequests: 5

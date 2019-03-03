@@ -40,26 +40,29 @@ func main() {
 	conn, err := grpc.Dial(address, grpc.WithInsecure())
 	if err != nil {
 		log.Fatal("cannot connect to address ", err)
+	} else {
+
+		defer conn.Close()
+		wg := sync.WaitGroup{}
+
+		for i := 0; i < countRoutines; i++ {
+
+			wg.Add(1)
+
+			go func(wGroup *sync.WaitGroup, j int) {
+				defer wGroup.Done()
+				defer func(i int) {
+
+					fmt.Println(fmt.Sprintf("stop consumer # %v", i))
+				}(j)
+
+				fmt.Println(fmt.Sprintf("run consumer # %v", j))
+
+				client := url.NewUrlClient(conn)
+
+				GetRandomDataStream(client)
+			}(&wg, i)
+		}
+		wg.Wait()
 	}
-	defer conn.Close()
-
-	wg := sync.WaitGroup{}
-	for i := 0; i < countRoutines; i++ {
-
-		wg.Add(1)
-		go func(wGroup *sync.WaitGroup, j int) {
-			defer wGroup.Done()
-			defer func(i int) {
-
-				fmt.Println(fmt.Sprintf("stop consumer # %v", i))
-			}(j)
-
-			fmt.Println(fmt.Sprintf("run consumer # %v", j))
-
-			client := url.NewUrlClient(conn)
-
-			GetRandomDataStream(client)
-		}(&wg, i)
-	}
-	wg.Wait()
 }

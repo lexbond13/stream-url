@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+var lockPrefix = ".lock"
+
 func initRedis() *redis.Client {
 	return redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
@@ -14,14 +16,20 @@ func initRedis() *redis.Client {
 }
 
 func existLock(key string) bool {
-
-	i := redisCli.Exists(key).Val()
+	i := redisCli.Exists(key + lockPrefix).Val()
 	if i <= 0 {
 		return false
 	}
 
 	return true
+}
 
+func redisSetLock(key string) error {
+	return redisSet(key + lockPrefix, "lock")
+}
+
+func redisSetUnlock(key string) error {
+	return redisDel(key + lockPrefix)
 }
 
 func redisGet(key string) (string, error) {
