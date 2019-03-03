@@ -10,9 +10,10 @@ import (
 	"net/http"
 	"sync"
 	"time"
-	"bitbucket.org/lexbond/stream-url/url"
+	urlProto "bitbucket.org/lexbond/stream-url/url"
 	"github.com/go-redis/redis"
 	"github.com/jinzhu/configor"
+	"net/url"
 	"net"
 	"google.golang.org/grpc"
 )
@@ -22,13 +23,12 @@ const (
 )
 
 type server struct {
-
 }
 
 var (
-	config   Config
-	redisCli *redis.Client
-	checkedUrl string
+	config    Config
+	redisCli  *redis.Client
+	validUrls []*url.URL
 )
 
 type Config struct {
@@ -47,12 +47,8 @@ type ResponseData struct {
 func Init() {
 	configor.Load(&config, "config.yml")
 	redisCli = initRedis()
-}
 
-func (s *server) GetRandomDataStream(empty *url.Empty, stream url.Url_GetRandomDataStreamServer) error {
-	runRoutines(stream)
-
-	return nil
+	validUrls = validateURLs(config.Urls)
 }
 
 func main() {
@@ -64,12 +60,31 @@ func main() {
 	}
 
 	s := grpc.NewServer()
-	url.RegisterUrlServer(s, &server{})
+	urlProto.RegisterUrlServer(s, &server{})
 	s.Serve(lis)
 }
 
+func validateURLs(urlForValidate []string) []*url.URL {
+	URLs := []*url.URL{}
 
-func runRoutines(stream url.Url_GetRandomDataStreamServer) {
+	for _, u := range urlForValidate {
+		parsedURL, err := url.Parse(u)
+		if err != nil {
+			log.Printf("Url is not valid: %v \n", u)
+			continue
+		}
+		URLs = append(URLs, parsedURL)
+	}
+	return URLs
+}
+
+func (s *server) GetRandomDataStream(empty *urlProto.Empty, stream urlProto.Url_GetRandomDataStreamServer) error {
+	runRoutines(stream)
+
+	return nil
+}
+
+func runRoutines(stream urlProto.Url_GetRandomDataStreamServer) {
 
 	responsesReceiver := make(chan ResponseData)
 	done := make(chan interface{})
@@ -79,10 +94,10 @@ func runRoutines(stream url.Url_GetRandomDataStreamServer) {
 	var mutex sync.Mutex
 
 	for i := 0; i < config.NumberOfRequests; i++ {
-		position := randInt(0, len(config.Urls))
+		position := randInt(0, len(validUrls))
 		waitGroup.Add(1)
 
-		go getRandomUrl(config.Urls[position], &waitGroup, responsesReceiver, &mutex)
+		go getRandomUrl(validUrls[position].String(), &waitGroup, responsesReceiver, &mutex)
 	}
 
 	go func(wg *sync.WaitGroup, ch chan interface{}) {
@@ -93,7 +108,7 @@ func runRoutines(stream url.Url_GetRandomDataStreamServer) {
 	for {
 		select {
 		case data := <-responsesReceiver:
-			dataResponse := &url.UrlData{}
+			dataResponse := &urlProto.UrlData{}
 			dataResponse.Data = data.Source
 			stream.Send(dataResponse)
 
@@ -104,45 +119,66 @@ func runRoutines(stream url.Url_GetRandomDataStreamServer) {
 	}
 }
 
-func getRandomUrl(url string, wg *sync.WaitGroup, responseCh chan<- ResponseData , mutex *sync.Mutex) {
+func getRandomUrl(URL string, wg *sync.WaitGroup, responseCh chan<- ResponseData, mutex *sync.Mutex) {
 	defer wg.Done()
 
-	mutex.Lock()
-	checkedUrl = getMD5Hash(url)
+	checkedUrl := getMD5Hash(URL)
 
-	if val, _ := redisGet(checkedUrl); val!="" {
-		responseCh <- ResponseData{Data:val, Source:"from cache "+url}
-	} else {
-		//если данных в кэше нет, проверяем есть ли лок
-		if !existLock(checkedUrl) {
-			//если лока нет, ставим его и загружаем данные
-			redisSetLock(checkedUrl)
-			data, err := getDataByUrl(url)
-			if err == nil {
-				redisSet(checkedUrl, string(data))
-				responseCh <- ResponseData{Data: string(data), Source: "from url "+ url}
+	// TODO вынести задержки в конфг, в формате time.ParseDuration
+	for _, delay := range []time.Duration{0, 1 * time.Second, 2 * time.Second} {
+		if delay != 0 {
+			select {
+			case <-time.After(delay):
 			}
-			// снимаем лок даже если ответа нет
-			redisSetUnlock(checkedUrl)
 		}
 
+		if val, _ := redisGet(checkedUrl); val != "" {
+			responseCh <- ResponseData{Data: val, Source: "from cache " + URL}
+			return
+		}
+
+		if existLock(checkedUrl) {
+			continue
+		}
+		getData(checkedUrl, URL, responseCh, mutex)
 	}
-	mutex.Unlock()
 }
 
-func getDataByUrl(url string) ([]byte, error) {
+func getData(checkedUrl string, URL string, responseCh chan<- ResponseData, mutex *sync.Mutex) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	//если лока нет, ставим его и загружаем данные
+	redisSetLock(checkedUrl)
+	// снимаем лок даже если ответа нет
+	defer redisSetUnlock(checkedUrl)
+
+	data, err := getDataByUrl(URL)
+	if err != nil {
+		// TODO сделать обработку когда URL недоступен, либо возвращает 404 или 500. В этом случае можно либо приостанавливать обработку адреса, либо исключать его
+		fmt.Println(err.Error())
+		return
+	}
+	redisSet(checkedUrl, string(data))
+	responseCh <- ResponseData{Data: string(data), Source: "from url " + URL}
+
+	// снимаем лок даже если ответа нет
+	redisSetUnlock(checkedUrl)
+}
+
+func getDataByUrl(URL string) ([]byte, error) {
 
 	client := http.Client{Timeout: 10 * time.Second}
-	req, err := client.Get(url)
+	req, err := client.Get(URL)
 	if err != nil {
-		log.Printf("Не могу получить данные по адресу %v, ошибка: %v", url, err)
+		log.Printf("Не могу получить данные по адресу %v, ошибка: %v", URL, err)
 		return nil, err
 	}
 	defer req.Body.Close()
 
 	b, err := ioutil.ReadAll(req.Body)
 	if err != nil {
-		log.Printf("Не могу получить код страницы по адресу %v, ошибка: %v", url, err)
+		log.Printf("Не могу получить код страницы по адресу %v, ошибка: %v", URL, err)
 		return nil, err
 	}
 

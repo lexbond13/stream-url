@@ -36,7 +36,6 @@ func GetRandomDataStream(client url.UrlClient) {
 }
 
 func main() {
-
 	conn, err := grpc.Dial(address, grpc.WithInsecure())
 	if err != nil {
 		log.Fatal("cannot connect to address ", err)
